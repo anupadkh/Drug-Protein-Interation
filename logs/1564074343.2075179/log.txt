@@ -1,0 +1,2 @@
+Namespace(batch_size=256, binary_th=0.0, checkpoint_path='', dataset_path='data/kiba/', is_log=0, learning_rate=0.001, log_dir='logs/1564074343.2075179/', max_seq_len=1000, max_smi_len=100, num_classes=0, num_epoch=100, num_hidden=0, num_windows=[32], problem_type=1, residues_vectors='../', seq_window_lengths=[8, 12], smi_window_lengths=[4, 8])
+---Parameter Search-----
