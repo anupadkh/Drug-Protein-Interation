@@ -125,6 +125,39 @@ def argparser():
       help="Feature Lengths"
   )
 
+  parser.add_argument(
+      '--method',
+      type=str,
+      default="deep_categorical_contact_tensor",
+      help="Method to run"
+  )
+
+  parser.add_argument(
+      '--multiplefeatures',
+      type=str,
+    #   default=repr([{'length': 400, 'filter_length': 32, 'filter_extra_no':3, 'method':'get_energy_by_id' }]),
+      help="Method to run",
+      default="None"
+  )
+
+  parser.add_argument(
+      '--tensor',
+      type=str,
+      default = repr([
+          {'length':2000, 'function':'pssm_dt', 
+            'convnet':{
+                'filter_length':32, # Kernel Size
+                'filter_extra_no':3,
+                'num_filters':32 # Window Size # the dimensionality of the output space
+
+            }
+          },
+          {'length':400, 'function':'residue_probing_transform'},
+          {'length':400, 'function':'evolutionary_diff'}
+      ]),
+      help = "Methods for PSSM"
+  )
+
 
 
   FLAGS, unparsed = parser.parse_known_args()

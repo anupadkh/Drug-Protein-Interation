@@ -9,5 +9,6 @@ python run_experiments.py --num_windows 32 \
                           --problem_type 1 \
                           --is_log 0 \
                           --log_dir 'logs/' 
+                          --method 'deep_categorical_contact_tensor'
                         #   --residues_vectors '../' \
                         #   --residues_file 'PC_RSRV' 

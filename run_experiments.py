@@ -4,8 +4,9 @@ from __future__ import print_function
 import numpy as np
 import tensorflow as tf
 import random as rn
+from arguments import *
 
-### We modified Pahikkala et al. (2014) source code for cross-val process ###
+
 
 import os
 os.environ['PYTHONHASHSEED'] = '0'
@@ -13,18 +14,19 @@ os.environ['PYTHONHASHSEED'] = '0'
 np.random.seed(1)
 rn.seed(1)
 
-session_conf = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+# session_conf = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+
 import keras
 from keras import backend as K
 tf.set_random_seed(0)
-sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph(), config=session_conf)
-K.set_session(sess)
+# sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph(), config=session_conf)
+# K.set_session(sess)
 
 
 from datahelper import DataSet
 #import logging
 from itertools import product
-from arguments import argparser, logging
+
 
 import keras
 from keras.models import Model
@@ -35,7 +37,7 @@ from keras.layers import Embedding
 from keras.layers import Conv1D, GlobalMaxPooling1D, MaxPooling1D
 from keras.layers.normalization import BatchNormalization
 from keras.layers import Conv2D, GRU
-from keras.layers import Input, Embedding, LSTM, Dense, TimeDistributed, Masking, RepeatVector, merge, Flatten
+from keras.layers import Input, Embedding, LSTM, Dense, TimeDistributed, Masking, RepeatVector, merge, Flatten, Reshape
 from keras.models import Model
 from keras.utils import plot_model
 from keras.layers import Bidirectional
@@ -57,6 +59,8 @@ from emetrics import get_aupr, get_cindex, get_rm2
 
 TABSY = "\t"
 figdir = "figures/"
+
+
 
 def build_combined_onehot(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
     XDinput = Input(shape=(FLAGS.max_smi_len, FLAGS.charsmiset_size))
@@ -104,10 +108,10 @@ def build_combined_onehot(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
 
 def build_combined_categorical(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
 
-    XDinput = Input(shape=(FLAGS.max_smi_len,), dtype='int32') ### Buralar flagdan gelmeliii
+    XDinput = Input(shape=(FLAGS.max_smi_len,), dtype='int32') 
     XTinput = Input(shape=(FLAGS.max_seq_len,), dtype='int32')
 
-    ### SMI_EMB_DINMS  FLAGS GELMELII
+    
     encode_smiles = Embedding(input_dim=FLAGS.charsmiset_size+1, output_dim=128, input_length=FLAGS.max_smi_len)(XDinput)
     encode_smiles = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
     encode_smiles = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
@@ -143,6 +147,195 @@ def build_combined_categorical(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH
 
     return interactionModel
 
+def deep_categorical_contact_tensor(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
+    XDinput = Input(shape=(FLAGS.max_smi_len,), dtype='int32') 
+    XTinput = Input(shape=(FLAGS.max_seq_len,), dtype='int32')
+    
+    # multiplefeatures = [ {'length': 500, 'filter_length': 32, 'filter_extra_no':3, 'method':eval('Dataset.calculate_energy') }]
+    if FLAGS.multiplefeatures:
+        multiplefeatures = FLAGS.multiplefeatures
+    else:
+        multiplefeatures = None
+    
+    encode_smiles = Embedding(input_dim=FLAGS.charsmiset_size+1, output_dim=128, input_length=FLAGS.max_smi_len)(XDinput)
+    encode_smiles = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = GlobalMaxPooling1D()(encode_smiles)
+
+
+    encode_protein = Embedding(input_dim=FLAGS.charseqset_size+1, output_dim=128, input_length=FLAGS.max_seq_len)(XTinput)
+    encode_protein = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = GlobalMaxPooling1D()(encode_protein)
+    encode_protein_main = encode_protein
+    inputs_multiple= []
+    # encode_protein_2 = tf.zeros([encode_protein.shape[0].value, 0])
+    # encode_protein_3 = encode_protein_2
+    functions_multiple = []
+    
+    my_iteration = 1 
+    if multiplefeatures != None:
+        for x in multiplefeatures:
+            m,n = combination_feature(FLAGS=FLAGS, 
+                FEATURE_LENGTH = x['length'], NUM_FILTERS=NUM_FILTERS, FILTER_LENGTH = x['filter_length'], 
+                FILTERS_EXTENSION = x['filter_extra_no']) 
+            inputs_multiple.append(n)
+            functions_multiple.append(x['method'])
+            if my_iteration != 1:
+                encode_protein = keras.layers.concatenate([encode_protein, m], axis=-1)
+            else:
+                encode_protein = m
+                my_iteration = 0
+
+        encode_protein_2 = encode_protein
+    
+    my_iteration = 1
+
+    if FLAGS.tensor != None:
+        function_pssm = []
+        for x in eval(FLAGS.tensor):
+            m = Input(shape=(x['length'],1), dtype='float32')
+            encode = GlobalMaxPooling1D()(m)
+            try:
+                if x['convnet'] != None:
+                    encode, m = combination_feature_1d(
+                        FLAGS=FLAGS,
+                        FEATURE_LENGTH = x['length'],
+                        NUM_FILTERS=x['convnet']['num_filters'],
+                        FILTER_LENGTH=x['convnet']['filter_length'],
+                        FILTERS_EXTENSION=x['convnet']['filter_extra_no']
+                    )
+            except:
+                pass
+            inputs_multiple.extend([m])
+            function_pssm.append(x['function'])
+            if my_iteration != 1:
+                encode_protein = keras.layers.concatenate([encode_protein, encode], axis=-1)
+            else:
+                encode_protein = encode
+                my_iteration = 0
+    
+        encode_protein_3 = encode_protein
+    to_concatenate = ['encode_protein_main', 'encode_protein_2', 'encode_protein_3'][1:]
+    encode_protein = eval('encode_protein_main')
+    for y in to_concatenate:
+        try:
+            encode_protein = keras.layers.concatenate([encode_protein , eval(y)] , axis=-1)
+        except:
+            print("ERROR " + " finding " + y )
+            # exit()
+
+
+
+    encode_interaction = keras.layers.concatenate([encode_smiles, encode_protein], axis=-1) #merge.Add()([encode_smiles, encode_protein])
+
+    # Fully connected
+    # FC1 = Dense(1024, activation='relu')(encode_interaction)
+    look_back = 1
+    encode_interaction =   Reshape(target_shape=(1,encode_interaction.shape.dims[1].value))(encode_interaction)
+    FC1 = (LSTM(4, input_shape=(1, look_back)))(encode_interaction)
+    # FC2 = Dropout(0.1)(FC1)
+    # FC2 = Dense(1024, activation='relu')(FC2)
+    # FC2 = Dropout(0.1)(FC2)
+    FC2 = Dense(512, activation='relu')(FC1)
+
+
+    # And add a logistic regression on top
+    predictions = Dense(1, kernel_initializer='normal')(FC2) #OR no activation, rght now it's between 0-1, do I want this??? activation='sigmoid'
+    m_inputs = [XDinput, XTinput]
+    m_inputs.extend(inputs_multiple)
+    interactionModel = Model(inputs=m_inputs, outputs=[predictions])
+
+    interactionModel.compile(optimizer='adam', loss='mean_squared_error', metrics=[cindex_score]) #, metrics=['cindex_score']
+    print(interactionModel.summary())
+    plot_model(interactionModel, to_file='figures/build_combined_categorical_tensor_contact_new.png')
+
+    if FLAGS.tensor != None:
+        functions_multiple = (functions_multiple, function_pssm)
+
+    return interactionModel, functions_multiple
+
+
+
+def deep_categorical_contact(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
+    XDinput = Input(shape=(FLAGS.max_smi_len,), dtype='int32') 
+    XTinput = Input(shape=(FLAGS.max_seq_len,), dtype='int32')
+    
+    # multiplefeatures = [ {'length': 500, 'filter_length': 32, 'filter_extra_no':3, 'method':eval('Dataset.calculate_energy') }]
+    if FLAGS.multiplefeatures:
+        multiplefeatures = FLAGS.multiplefeatures
+    else:
+        multiplefeatures = None
+    
+    encode_smiles = Embedding(input_dim=FLAGS.charsmiset_size+1, output_dim=128, input_length=FLAGS.max_smi_len)(XDinput)
+    encode_smiles = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = GlobalMaxPooling1D()(encode_smiles)
+
+
+    encode_protein = Embedding(input_dim=FLAGS.charseqset_size+1, output_dim=128, input_length=FLAGS.max_seq_len)(XTinput)
+    encode_protein = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = GlobalMaxPooling1D()(encode_protein)
+    inputs_multiple = []
+    functions_multiple = []
+    if multiplefeatures != None:
+        for x in multiplefeatures:
+            m,n = combination_feature(FLAGS=FLAGS, 
+                FEATURE_LENGTH = x['length'], NUM_FILTERS=NUM_FILTERS, FILTER_LENGTH = x['filter_length'], 
+                FILTERS_EXTENSION = x['filter_extra_no']) 
+            inputs_multiple.append(n)
+            functions_multiple.append(x['method'])
+            encode_protein = keras.layers.concatenate([encode_protein, m], axis=-1)
+
+    
+
+
+    encode_interaction = keras.layers.concatenate([encode_smiles, encode_protein], axis=-1) #merge.Add()([encode_smiles, encode_protein])
+
+    # Fully connected
+    FC1 = Dense(1024, activation='relu')(encode_interaction)
+    FC2 = Dropout(0.1)(FC1)
+    FC2 = Dense(1024, activation='relu')(FC2)
+    FC2 = Dropout(0.1)(FC2)
+    FC2 = Dense(512, activation='relu')(FC2)
+
+
+    # And add a logistic regression on top
+    predictions = Dense(1, kernel_initializer='normal')(FC2) #OR no activation, rght now it's between 0-1, do I want this??? activation='sigmoid'
+    m_inputs = [XDinput, XTinput]
+    m_inputs.extend(inputs_multiple)
+    interactionModel = Model(inputs=m_inputs, outputs=[predictions])
+
+    interactionModel.compile(optimizer='adam', loss='mean_squared_error', metrics=[cindex_score]) #, metrics=['cindex_score']
+    print(interactionModel.summary())
+    plot_model(interactionModel, to_file='figures/build_combined_categorical_contact.png')
+
+    return interactionModel, functions_multiple
+
+
+def combination_feature(FLAGS, FEATURE_LENGTH, NUM_FILTERS, FILTER_LENGTH, FILTERS_EXTENSION):
+    XEInput = Input(shape=(FEATURE_LENGTH,1,), dtype='float32')
+    energy_mat = Conv1D(filters = NUM_FILTERS, kernel_size=FILTER_LENGTH,  activation='relu', padding='valid')(XEInput)
+    for x in range(FILTERS_EXTENSION-1):
+        energy_mat = Conv1D(filters=NUM_FILTERS*(x+2), kernel_size=FILTER_LENGTH,  activation='relu', padding='valid')(energy_mat)
+    encode_energy = GlobalMaxPooling1D()(energy_mat)
+
+    return encode_energy, XEInput
+
+def combination_feature_1d(FLAGS, FEATURE_LENGTH, NUM_FILTERS, FILTER_LENGTH, FILTERS_EXTENSION):
+    XEInput = Input(shape=(FEATURE_LENGTH,1), dtype='float32')
+    # XEInput = Reshape(target_shape=(FEATURE_LENGTH,1))(XEInput)
+    energy_mat = Conv1D(filters = NUM_FILTERS, kernel_size=FILTER_LENGTH,  activation='relu', padding='valid')(XEInput)
+    for x in range(FILTERS_EXTENSION-1):
+        energy_mat = Conv1D(filters=NUM_FILTERS*(x+2), kernel_size=FILTER_LENGTH,  activation='relu', padding='valid')(energy_mat)
+    encode_energy = GlobalMaxPooling1D()(energy_mat)
+
+    return encode_energy, XEInput
 
 
 def build_single_drug(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
@@ -303,7 +496,30 @@ def nfold_1_2_3_setting_sample(XD, XT,  Y, label_row_inds, label_col_inds, measu
     return avgperf, avgloss, teststd
 
 
+def make_features_set(data,functions):
+    feat = []
+    for x in functions:
+        feat_y = []
+        values={}
+        for z in np.unique(data):
+            values[z] = x(z)
+        for y in data:
+            feat_y.append(values[y])
+        feat.append(feat_y)
+    return feat
 
+def make_pssm_features_set(data, functions, dataset=None):
+    feat = []
+    for x in functions:
+        feat_y = []
+        values={}
+        x = getattr(dataset,x)
+        for z in np.unique(data):
+            values[z] = x(z)
+        for y in data:
+            feat_y.append(values[y])
+        feat.append(feat_y)
+    return feat
 
 def general_nfold_cv(XD, XT,  Y, label_row_inds, label_col_inds, prfmeasure, runmethod, FLAGS, labeled_sets, val_sets): ## BURAYA DA FLAGS LAZIM????
 
@@ -361,12 +577,69 @@ def general_nfold_cv(XD, XT,  Y, label_row_inds, label_col_inds, prfmeasure, run
                     param3value = paramset3[param3ind]
 
                     gridmodel = runmethod(FLAGS, param1value, param2value, param3value)
-                    gridres = gridmodel.fit(([np.array(train_drugs),np.array(train_prots) ]), np.array(train_Y), batch_size=batchsz, epochs=epoch,
-                            validation_data=( ([np.array(val_drugs), np.array(val_prots) ]), np.array(val_Y)),  shuffle=False )
+                    # if gridmodel is tuple, we have to convert protein sets to the respective feature sets as well
+                    if type(gridmodel) != eval("tuple"):
+                        gridres = gridmodel.fit(([np.array(train_drugs),np.array(train_prots) ]), np.array(train_Y), batch_size=batchsz, epochs=epoch,
+                                validation_data=( ([np.array(val_drugs), np.array(val_prots) ]), np.array(val_Y)),  shuffle=False )
+                        gridmodel.save_weights("model.h5")
+                        predicted_labels = gridmodel.predict([np.array(val_drugs), np.array(val_prots) ])
+                        loss, rperf2 = gridmodel.evaluate(([np.array(val_drugs),np.array(val_prots) ]), np.array(val_Y), verbose=0)
+                    else:
+                        if type(gridmodel[1]) != tuple:
+                            # make_features_set([np.array(train_drugs), np.array(train_prots)], gridmodel[1])
+                            trainset=[np.array(train_drugs), np.array(train_prots)]
+                            for r in make_features_set([list(FLAGS.protein.keys())[r] for r in trcols], gridmodel[1]):
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                trainset.append(r)
+                            valset = [np.array(val_drugs), np.array(val_prots) ]
+                            for r in make_features_set([list(FLAGS.protein.keys())[r] for r in tecols], gridmodel[1]) :
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                valset.append(r) 
+                            # np.concatenate(( [train_drugs, train_prots], make_features_set([list(FLAGS.protein.keys())[r] for r in trcols], gridmodel[1]) ))
+                            gridres = gridmodel[0].fit( trainset
+                                , np.array(train_Y), batch_size=batchsz, epochs=epoch,
+                                # np.concatenate(( [np.array(val_drugs), np.array(val_prots) ], make_features_set([list(FLAGS.protein.keys())[r] for r in tecols], gridmodel[1]) ))
+                                validation_data = (valset, np.array(val_Y))
+                            )
+                            gridmodel[0].save_weights("model.h5")
+                            predicted_labels = gridmodel[0].predict(valset)
+                            loss, rperf2 = gridmodel[0].evaluate(valset, np.array(val_Y), verbose=0)
+                        else:
+                            trainset=[np.array(train_drugs), np.array(train_prots)]
+                            # processing for sequence related set
+                            for r in make_features_set([list(FLAGS.protein.keys())[r] for r in trcols], gridmodel[1][0]):
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                trainset.append(r)
+                            #processing for pssm related set
+                            for r in make_pssm_features_set([list(FLAGS.protein.keys())[r] for r in trcols], gridmodel[1][1], dataset = FLAGS.data_instance):
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                trainset.append(r)
 
+                            valset = [np.array(val_drugs), np.array(val_prots) ]
+                            for r in make_features_set([list(FLAGS.protein.keys())[r] for r in tecols], gridmodel[1][0]) :
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                valset.append(r) 
+                            for r in make_pssm_features_set([list(FLAGS.protein.keys())[r] for r in tecols], gridmodel[1][1], dataset = FLAGS.data_instance):
+                                r = np.array(r)
+                                r = r.reshape(-1,r.shape[1],1)
+                                valset.append(r)
+                            
+                            # np.concatenate(( [train_drugs, train_prots], make_features_set([list(FLAGS.protein.keys())[r] for r in trcols], gridmodel[1]) ))
 
-                    predicted_labels = gridmodel.predict([np.array(val_drugs), np.array(val_prots) ])
-                    loss, rperf2 = gridmodel.evaluate(([np.array(val_drugs),np.array(val_prots) ]), np.array(val_Y), verbose=0)
+                            gridres = gridmodel[0].fit( trainset
+                                , np.array(train_Y), batch_size=batchsz, epochs=epoch,
+                                # np.concatenate(( [np.array(val_drugs), np.array(val_prots) ], make_features_set([list(FLAGS.protein.keys())[r] for r in tecols], gridmodel[1]) ))
+                                validation_data = (valset, np.array(val_Y))
+                            )
+                            gridmodel[0].save_weights("model.h5")
+                            predicted_labels = gridmodel[0].predict(valset)
+                            loss, rperf2 = gridmodel[0].evaluate(valset, np.array(val_Y), verbose=0)
+                            
                     rperf = prfmeasure(val_Y, predicted_labels)
                     rperf = rperf[0]
 
@@ -494,7 +767,7 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
     # set character set size
     FLAGS.charseqset_size = dataset.charseqset_size
     FLAGS.charsmiset_size = dataset.charsmiset_size
-
+    
     XD, XT, Y = dataset.parse_data(FLAGS)
 
     XD = np.asarray(XD)
@@ -502,19 +775,36 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
     Y = np.asarray(Y)
 
     drugcount = XD.shape[0]
-    print(drugcount)
+    print(XD.shape)
     targetcount = XT.shape[0]
-    print(targetcount)
+    print(XT.shape)
 
     FLAGS.drug_count = drugcount
     FLAGS.target_count = targetcount
 
-    label_row_inds, label_col_inds = np.where(np.isnan(Y)==False)  #basically finds the point address of affinity [x,y]
+    label_row_inds, label_col_inds = np.where(np.isnan(Y) == False)  #basically finds the point address of affinity [x,y]
 
     if not os.path.exists(figdir):
         os.makedirs(figdir)
 
     print(FLAGS.log_dir)
+    FLAGS.multiplefeatures = eval(FLAGS.multiplefeatures)
+    multiplefeatures = (FLAGS.multiplefeatures)
+    FLAGS.protein = dataset.proteins
+    FLAGS.data_instance = dataset
+    if multiplefeatures != None:
+        dataset.get_proteins_features()
+        
+
+        for x in range(len(multiplefeatures)):
+            try:
+                func = getattr(dataset, multiplefeatures[x]['method'])
+                multiplefeatures[x]['method'] = func
+            except AttributeError:
+                print("Bro... You mentioned wrong dataset function name in method")
+                exit()
+    dataset.set_pssm_dir('/anup_files/FILES/programs/drug/DeepDTA/pssm-repo/pssm_data/output')
+
     S1_avgperf, S1_avgloss, S1_teststd = nfold_1_2_3_setting_sample(XD, XT, Y, label_row_inds, label_col_inds,
                                                                      perfmeasure, deepmethod, FLAGS, dataset)
 
@@ -523,14 +813,15 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
             (S1_avgperf, S1_avgloss, S1_teststd), FLAGS)
 
 
-
+ 
 
 def run_regression( FLAGS ):
 
     perfmeasure = get_cindex
-    deepmethod = build_combined_categorical
+    deepmethod = eval(FLAGS.method)
 
     experiment(FLAGS, perfmeasure, deepmethod)
+
 
 if __name__=="__main__":
     FLAGS = argparser()
@@ -540,4 +831,4 @@ if __name__=="__main__":
         os.makedirs(FLAGS.log_dir)
 
     logging(str(FLAGS), FLAGS)
-    run_regression( FLAGS )
+    run_regression(FLAGS)
