@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 import random as rn
 from arguments import *
-
+import matplotlib.pyplot as plt
 
 
 import os
@@ -34,7 +34,7 @@ from keras.preprocessing import sequence
 from keras.models import Sequential, load_model
 from keras.layers import Dense, Dropout, Activation, Add
 from keras.layers import Embedding
-from keras.layers import Conv1D, GlobalMaxPooling1D, MaxPooling1D
+from keras.layers import Conv1D, GlobalMaxPooling1D, MaxPooling1D, PReLU
 from keras.layers.normalization import BatchNormalization
 from keras.layers import Conv2D, GRU
 from keras.layers import Input, Embedding, LSTM, Dense, TimeDistributed, Masking, RepeatVector, merge, Flatten, Reshape
@@ -196,8 +196,14 @@ def deep_categorical_contact_tensor(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_L
     if FLAGS.tensor != None:
         function_pssm = []
         for x in eval(FLAGS.tensor):
-            m = Input(shape=(x['length'],1), dtype='float32')
-            encode = GlobalMaxPooling1D()(m)
+            # m = Input(shape=(x['length'],1), dtype='float32')
+            m = Input(shape=(x['length'],) , dtype='float32')
+            fx = Reshape((x['length'],1),input_shape=(x['length'],))(m)
+            fx = Conv1D(filters=64, kernel_size=3, activation='linear',padding='same')(fx)
+            blck = fx
+            blck = BatchNormalization()(blck)
+            blck = PReLU()(blck)
+            encode = GlobalMaxPooling1D()(blck)
             try:
                 if x['convnet'] != None:
                     encode, m = combination_feature_1d(
@@ -462,8 +468,9 @@ def nfold_1_2_3_setting_sample(XD, XT,  Y, label_row_inds, label_col_inds, measu
 
     #print("Test Set len", str(len(test_set)))
     #print("Outer Train Set len", str(len(outer_train_sets)))
+    logging("---WITH-TEST_SETS---",FLAGS)
     bestparam, best_param_list, bestperf, all_predictions, all_losses = general_nfold_cv(XD, XT,  Y, label_row_inds, label_col_inds,
-                                                                                                measure, runmethod, FLAGS, train_sets, test_sets)
+    measure, runmethod, FLAGS, train_sets, test_sets)
 
     testperf = all_predictions[bestparamind]##pointer pos
 
@@ -493,7 +500,125 @@ def nfold_1_2_3_setting_sample(XD, XT,  Y, label_row_inds, label_col_inds, measu
     logging("Test Performance MSE", FLAGS)
     logging(testloss, FLAGS)
 
-    return avgperf, avgloss, teststd
+    return avgperf, avgloss, teststd 
+
+def deep_lstm(FLAGS, NUM_FILTERS, FILTER_LENGTH1, FILTER_LENGTH2):
+    XDinput = Input(shape=(FLAGS.max_smi_len,), dtype='int32') 
+    XTinput = Input(shape=(FLAGS.max_seq_len,), dtype='int32')
+    
+    # multiplefeatures = [ {'length': 500, 'filter_length': 32, 'filter_extra_no':3, 'method':eval('Dataset.calculate_energy') }]
+    if FLAGS.multiplefeatures:
+        multiplefeatures = FLAGS.multiplefeatures
+    else:
+        multiplefeatures = None
+    
+    encode_smiles = Embedding(input_dim=FLAGS.charsmiset_size+1, output_dim=128, input_length=FLAGS.max_smi_len)(XDinput)
+    encode_smiles = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH1,  activation='relu', padding='valid',  strides=1)(encode_smiles)
+    encode_smiles = GlobalMaxPooling1D()(encode_smiles)
+
+
+    encode_protein = Embedding(input_dim=FLAGS.charseqset_size+1, output_dim=128, input_length=FLAGS.max_seq_len)(XTinput)
+    encode_protein = Conv1D(filters=NUM_FILTERS, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*2, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = Conv1D(filters=NUM_FILTERS*3, kernel_size=FILTER_LENGTH2,  activation='relu', padding='valid',  strides=1)(encode_protein)
+    encode_protein = GlobalMaxPooling1D()(encode_protein)
+    encode_protein_main = encode_protein
+    inputs_multiple= []
+    # encode_protein_2 = tf.zeros([encode_protein.shape[0].value, 0])
+    # encode_protein_3 = encode_protein_2
+    functions_multiple = []
+    
+    my_iteration = 1 
+    if multiplefeatures != None:
+        for x in multiplefeatures:
+            m,n = combination_feature(FLAGS=FLAGS, 
+                FEATURE_LENGTH = x['length'], NUM_FILTERS=NUM_FILTERS, FILTER_LENGTH = x['filter_length'], 
+                FILTERS_EXTENSION = x['filter_extra_no']) 
+            inputs_multiple.append(n)
+            functions_multiple.append(x['method'])
+            if my_iteration != 1:
+                encode_protein = keras.layers.concatenate([encode_protein, m], axis=-1)
+            else:
+                encode_protein = m
+                my_iteration = 0
+
+        encode_protein_2 = encode_protein
+    
+    my_iteration = 1
+
+    if FLAGS.tensor != None:
+        function_pssm = []
+        for x in eval(FLAGS.tensor):
+            # m = Input(shape=(x['length'],1), dtype='float32')
+            m = Input(shape=(x['length'],) , dtype='float32')
+            fx = Reshape((x['length'],1),input_shape=(x['length'],))(m)
+            fx = Conv1D(filters=64, kernel_size=3, activation='linear',padding='same')(fx)
+            blck = fx
+            blck = BatchNormalization()(blck)
+            blck = PReLU()(blck)
+            encode = GlobalMaxPooling1D()(blck)
+            try:
+                if x['convnet'] != None:
+                    encode, m = combination_feature_1d(
+                        FLAGS=FLAGS,
+                        FEATURE_LENGTH = x['length'],
+                        NUM_FILTERS=x['convnet']['num_filters'],
+                        FILTER_LENGTH=x['convnet']['filter_length'],
+                        FILTERS_EXTENSION=x['convnet']['filter_extra_no']
+                    )
+            except:
+                pass
+            inputs_multiple.extend([m])
+            function_pssm.append(x['function'])
+            if my_iteration != 1:
+                encode_protein = keras.layers.concatenate([encode_protein, encode], axis=-1)
+            else:
+                encode_protein = encode
+                my_iteration = 0
+    
+        encode_protein_3 = encode_protein
+    to_concatenate = ['encode_protein_main', 'encode_protein_2', 'encode_protein_3'][1:]
+    encode_protein = eval('encode_protein_main')
+    for y in to_concatenate:
+        try:
+            encode_protein = keras.layers.concatenate([encode_protein , eval(y)] , axis=-1)
+        except:
+            print("ERROR " + " finding " + y )
+            # exit()
+
+
+
+    encode_interaction = keras.layers.concatenate([encode_smiles, encode_protein], axis=-1) #merge.Add()([encode_smiles, encode_protein])
+
+    # Fully connected
+    # FC1 = Dense(1024, activation='relu')(encode_interaction)
+    look_back = 1
+    encode_interaction =   Reshape(target_shape=(1,encode_interaction.shape.dims[1].value))(encode_interaction)
+    FC1 = (LSTM(4, input_shape=(1, look_back)))(encode_interaction)
+    # FC2 = Dropout(0.1)(FC1)
+    # FC2 = Dense(1024, activation='relu')(FC2)
+    # FC2 = Dropout(0.1)(FC2)
+    FC2 = Dense(512, activation='relu')(FC1)
+
+
+    # And add a logistic regression on top
+    predictions = Dense(1, kernel_initializer='normal')(FC2) #OR no activation, rght now it's between 0-1, do I want this??? activation='sigmoid'
+    m_inputs = [XDinput, XTinput]
+    m_inputs.extend(inputs_multiple)
+    interactionModel = Model(inputs=m_inputs, outputs=[predictions])
+
+    interactionModel.compile(optimizer='adam', loss='mean_squared_error', metrics=[cindex_score]) #, metrics=['cindex_score']
+    print(interactionModel.summary())
+    plot_model(interactionModel, to_file='figures/lstm.png')
+
+    if FLAGS.tensor != None:
+        functions_multiple = (functions_multiple, function_pssm)
+
+    return interactionModel, functions_multiple
+
+
 
 
 def make_features_set(data,functions):
@@ -521,7 +646,7 @@ def make_pssm_features_set(data, functions, dataset=None):
         feat.append(feat_y)
     return feat
 
-def general_nfold_cv(XD, XT,  Y, label_row_inds, label_col_inds, prfmeasure, runmethod, FLAGS, labeled_sets, val_sets): ## BURAYA DA FLAGS LAZIM????
+def general_nfold_cv(XD, XT,  Y, label_row_inds, label_col_inds, prfmeasure, runmethod, FLAGS, labeled_sets, val_sets): 
 
     paramset1 = FLAGS.num_windows                              #[32]#[32,  512] #[32, 128]  # filter numbers
     paramset2 = FLAGS.smi_window_lengths                               #[4, 8]#[4,  32] #[4,  8] #filter length smi
@@ -759,8 +884,8 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
     #foldcount: number of cross-validation folds for settings 1-3, setting 4 always runs 3x3 cross-validation
 
 
-    dataset = DataSet( fpath = FLAGS.dataset_path, ### BUNU ARGS DA GUNCELLE
-                      setting_no = FLAGS.problem_type, ##BUNU ARGS A EKLE
+    dataset = DataSet( fpath = FLAGS.dataset_path, 
+                      setting_no = FLAGS.problem_type, 
                       seqlen = FLAGS.max_seq_len,
                       smilen = FLAGS.max_smi_len,
                       need_shuffle = False )
@@ -792,13 +917,12 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
     multiplefeatures = (FLAGS.multiplefeatures)
     FLAGS.protein = dataset.proteins
     FLAGS.data_instance = dataset
+    
     if multiplefeatures != None:
         dataset.get_proteins_features()
-        
-
         for x in range(len(multiplefeatures)):
             try:
-                func = getattr(dataset, multiplefeatures[x]['method'])
+                func = getattr(dataset, multiplefeatures[x]['method'])  # method will not work: Use 'function' instead
                 multiplefeatures[x]['method'] = func
             except AttributeError:
                 print("Bro... You mentioned wrong dataset function name in method")
@@ -806,11 +930,11 @@ def experiment(FLAGS, perfmeasure, deepmethod, foldcount=6): #5-fold cross valid
     dataset.set_pssm_dir('/anup_files/FILES/programs/drug/DeepDTA/pssm-repo/pssm_data/output')
 
     S1_avgperf, S1_avgloss, S1_teststd = nfold_1_2_3_setting_sample(XD, XT, Y, label_row_inds, label_col_inds,
-                                                                     perfmeasure, deepmethod, FLAGS, dataset)
+        perfmeasure, deepmethod, FLAGS, dataset)
 
     logging("Setting " + str(FLAGS.problem_type), FLAGS)
     logging("avg_perf = %.5f,  avg_mse = %.5f, std = %.5f" %
-            (S1_avgperf, S1_avgloss, S1_teststd), FLAGS)
+        (S1_avgperf, S1_avgloss, S1_teststd), FLAGS)
 
 
  
@@ -830,5 +954,5 @@ if __name__=="__main__":
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
 
-    logging(str(FLAGS), FLAGS)
-    run_regression(FLAGS)
+logging(str(FLAGS), FLAGS)
+run_regression(FLAGS)
